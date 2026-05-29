@@ -225,8 +225,9 @@
                 const newItems = [];
                 
                 lines.forEach(line => {
-                    // 쓸모없는 헤더나 공급가액 총합 라인 무시
-                    if (line.includes('예상단가') || line.includes('수량') || line.match(/^내용\s+규격/) || line.includes('공급가액')) return;
+                    // 사업자 정보, 날짜, 헤더 등 불필요한 라인 무시 (필터링 강화)
+                    const skipKeywords = ['예상단가', '수량', '공급가액', '견적서', '등록번호', '상호', '성명', '귀하', '공급자', '소재지', '업태', '종목', '합계', '일금', 'TEL', '단가', '단 가', '비고'];
+                    if (skipKeywords.some(kw => line.includes(kw)) || line.match(/^내용\s+규격/) || line.match(/^\d{4}년/)) return;
 
                     let tokens = [];
                     // PDF나 복사 텍스트에 | 기호가 있으면 파이프라인 기준으로 분리
@@ -269,10 +270,15 @@
                          if (strings.length > 0) name = strings[0];
                          if (strings.length > 1) spec = strings[1];
                          
-                         newItems.push({
-                             id: Date.now().toString() + Math.random(),
-                             name, spec, unit: '개', qty, price
-                         });
+                         // 가격이 존재(0원 초과)하고 이름이 있는 경우만 유효한 품목으로 판단하여 추가
+                         if (price > 0 && name.trim() !== '') {
+                             newItems.push({
+                                 id: Date.now().toString() + Math.random(),
+                                 name: name.replace(/\|/g, '').trim(), 
+                                 spec: spec.replace(/\|/g, '').trim(), 
+                                 unit: '개', qty, price
+                             });
+                         }
                     }
                 });
 
