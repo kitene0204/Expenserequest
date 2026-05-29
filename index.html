@@ -17,6 +17,9 @@
     
     <!-- SheetJS (엑셀 파일 처리) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    
+    <!-- PDF.js (PDF 파일 처리) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 
     <style>
         @keyframes fade-in-down {
@@ -44,6 +47,11 @@
     <script type="text/babel">
         // 브라우저 환경에 맞게 React 기능 불러오기 (import 대신 사용)
         const { useState, useEffect, useRef } = React;
+
+        // PDF.js 워커 설정 (PDF 문서를 읽기 위해 필요)
+        if (window.pdfjsLib) {
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        }
 
         // --- 유틸리티 및 아이콘 컴포넌트 ---
         const UploadIcon = () => (<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>);
@@ -132,32 +140,79 @@
                 const file = e.target.files[0];
                 if (!file) return;
 
-                if (!window.XLSX) {
-                    showMessage("엑셀 처리 기능을 불러오는 중입니다. 잠시 후 다시 시도해주세요.");
-                    return;
-                }
+                const fileExt = file.name.split('.').pop().toLowerCase();
 
-                const reader = new FileReader();
-                reader.onload = (evt) => {
-                    try {
-                        const data = evt.target.result;
-                        const wb = window.XLSX.read(data, { type: 'array' });
-                        const wsname = wb.SheetNames[0];
-                        const ws = wb.Sheets[wsname];
-                        
-                        const txt = window.XLSX.utils.sheet_to_txt(ws); 
-                        
-                        setRawText((prev) => prev ? prev + '\n\n' + txt : txt);
-                        showMessage("파일을 성공적으로 불러왔습니다.");
-                        
-                        e.target.value = '';
-                        
-                    } catch (error) {
-                        console.error("파일 파싱 에러:", error);
-                        showMessage("파일을 읽는 중 오류가 발생했습니다. 정상적인 엑셀 파일인지 확인해주세요.");
+                // 1. PDF 파일일 경우 처리
+                if (fileExt === 'pdf') {
+                    if (!window.pdfjsLib) {
+                        showMessage("PDF 처리 기능을 불러오는 중입니다. 잠시 후 다시 시도해주세요.");
+                        return;
                     }
-                };
-                reader.readAsArrayBuffer(file);
+
+                    const reader = new FileReader();
+                    reader.onload = async (evt) => {
+                        try {
+                            const typedarray = new Uint8Array(evt.target.result);
+                            const pdf = await window.pdfjsLib.getDocument(typedarray).promise;
+                            let fullText = "";
+                            
+                            for (let i = 1; i <= pdf.numPages; i++) {
+                                const page = await pdf.getPage(i);
+                                const textContent = await page.getTextContent();
+                                
+                                let lastY = -1;
+                                let text = "";
+                                for (let item of textContent.items) {
+                                    // Y좌표(높이)가 바뀌면 줄바꿈, 같은 줄이면 탭(Tab)으로 열 구분
+                                    if (lastY !== item.transform[5] && lastY !== -1) {
+                                         text += "\n";
+                                    } else if (lastY !== -1) {
+                                         text += "\t";
+                                    }
+                                    text += item.str.trim();
+                                    lastY = item.transform[5];
+                                }
+                                fullText += text + "\n\n";
+                            }
+                            setRawText((prev) => prev ? prev + '\n\n' + fullText : fullText);
+                            showMessage("PDF 파일을 성공적으로 불러왔습니다.");
+                            e.target.value = '';
+                        } catch (err) {
+                            console.error(err);
+                            showMessage("PDF 파일을 읽는 중 오류가 발생했습니다.");
+                        }
+                    };
+                    reader.readAsArrayBuffer(file);
+                } 
+                // 2. 엑셀 파일일 경우 처리
+                else {
+                    if (!window.XLSX) {
+                        showMessage("엑셀 처리 기능을 불러오는 중입니다. 잠시 후 다시 시도해주세요.");
+                        return;
+                    }
+
+                    const reader = new FileReader();
+                    reader.onload = (evt) => {
+                        try {
+                            const data = evt.target.result;
+                            const wb = window.XLSX.read(data, { type: 'array' });
+                            const wsname = wb.SheetNames[0];
+                            const ws = wb.Sheets[wsname];
+                            
+                            const txt = window.XLSX.utils.sheet_to_txt(ws); 
+                            
+                            setRawText((prev) => prev ? prev + '\n\n' + txt : txt);
+                            showMessage("엑셀 파일을 성공적으로 불러왔습니다.");
+                            
+                            e.target.value = '';
+                            
+                        } catch (error) {
+                            console.error("파일 파싱 에러:", error);
+                            showMessage("파일을 읽는 중 오류가 발생했습니다. 정상적인 엑셀 파일인지 확인해주세요.");
+                        }
+                    };
+                    reader.readAsArrayBuffer(file);
+                }
             };
 
             const handleParse = () => {
@@ -170,10 +225,18 @@
                 const newItems = [];
                 
                 lines.forEach(line => {
-                    if (line.includes('예상단가') || line.includes('수량') || line.match(/^내용\s+규격/)) return;
+                    // 쓸모없는 헤더나 공급가액 총합 라인 무시
+                    if (line.includes('예상단가') || line.includes('수량') || line.match(/^내용\s+규격/) || line.includes('공급가액')) return;
 
-                    let tokens = line.split('\t');
-                    if (tokens.length < 2) tokens = line.split(/\s{2,}/); 
+                    let tokens = [];
+                    // PDF나 복사 텍스트에 | 기호가 있으면 파이프라인 기준으로 분리
+                    if (line.includes('|')) {
+                        tokens = line.split('|').map(t => t.trim()).filter(t => t);
+                    } else if (line.includes('\t')) {
+                        tokens = line.split('\t');
+                    } else {
+                        tokens = line.split(/\s{2,}/); 
+                    }
                     
                     if (tokens.length >= 2) {
                          let name = '';
@@ -185,11 +248,12 @@
                          const strings = [];
                          
                          tokens.forEach(t => {
-                             const clean = t.replace(/,/g, '').replace(/원$/, '').replace(/개$/, '').replace(/EA$/, '').trim();
+                             // '48개', '1박스' 등의 단위를 날리지 않고 규격(spec)으로 보존하기 위해 정규식 수정
+                             const clean = t.replace(/,/g, '').replace(/원$/, '').trim();
                              if (clean && !isNaN(clean) && Number(clean) > 0) {
                                  numbers.push(Number(clean));
-                             } else if (t) {
-                                 strings.push(t);
+                             } else if (t.trim() && t.trim() !== '|') {
+                                 strings.push(t.trim());
                              }
                          });
                          
@@ -325,7 +389,7 @@
                                     <div className="flex gap-2">
                                         <input 
                                             type="file" 
-                                            accept=".xlsx, .xls, .csv" 
+                                            accept=".xlsx, .xls, .csv, .pdf" 
                                             className="hidden" 
                                             ref={fileInputRef}
                                             onChange={handleFileUpload}
@@ -333,14 +397,14 @@
                                         <button 
                                             onClick={() => fileInputRef.current.click()}
                                             className="flex-1 flex items-center justify-center gap-2 bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-medium px-3 py-2.5 rounded-lg transition-colors border border-slate-300">
-                                            <UploadIcon /> 엑셀 파일(.xlsx) 불러오기
+                                            <UploadIcon /> 엑셀/PDF 파일 불러오기
                                         </button>
                                     </div>
                                 </div>
                                 <div className="p-4 flex-grow flex flex-col">
                                     <textarea 
                                         className="w-full h-full min-h-[300px] lg:min-h-[430px] p-3 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none transition-all placeholder:text-slate-400 leading-relaxed"
-                                        placeholder="[방법 1] 상단의 버튼으로 엑셀(.xlsx, .csv) 견적서 파일을 업로드하세요.&#13;&#10;&#13;&#10;[방법 2] PDF 파일이나 쇼핑몰 장바구니 화면은 표 내용을 마우스로 드래그 복사(Ctrl+C)하여 이곳에 붙여넣기(Ctrl+V) 하세요."
+                                        placeholder="[방법 1] 상단의 버튼으로 엑셀(.xlsx)이나 PDF 견적서 파일을 업로드하세요.&#13;&#10;&#13;&#10;[방법 2] 표 내용을 마우스로 드래그 복사(Ctrl+C)하여 이곳에 직접 붙여넣기(Ctrl+V) 하셔도 됩니다."
                                         value={rawText}
                                         onChange={(e) => setRawText(e.target.value)}
                                     />
